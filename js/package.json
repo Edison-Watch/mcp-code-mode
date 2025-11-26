@@ -1,0 +1,22 @@
+{
+  "name": "@mcp-code-mode/ast-extractor",
+  "version": "0.1.0",
+  "description": "AST-based import extraction and security validation for TypeScript code",
+  "type": "module",
+  "main": "extract_imports.mjs",
+  "scripts": {
+    "test": "node ../tests/js/test_extractor.mjs"
+  },
+  "keywords": [
+    "ast",
+    "typescript",
+    "security",
+    "validation",
+    "mcp"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "typescript": "^5.7.0"
+  }
+}
+
