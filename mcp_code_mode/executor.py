@@ -6,15 +6,22 @@ Deno provides:
 - Native TypeScript support (no transpilation needed)
 - Configurable permissions model
 - Import maps to control module resolution
+
+DOS Protection:
+- Memory limit via V8 max-old-space-size flag
+- Hard timeout cap to prevent unbounded execution
+- Concurrency limit via semaphore
+- Output size limit to prevent parent process OOM
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import shutil
 import tempfile
-from asyncio.subprocess import PIPE
+from asyncio.subprocess import PIPE, Process
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +29,25 @@ from typing import Any
 from .validator import CodeValidator, ValidationResult
 
 log = logging.getLogger(__name__)
+
+# =============================================================================
+# DOS Protection Constants
+# =============================================================================
+
+# Maximum timeout in seconds (hard cap, cannot be exceeded by caller)
+MAX_TIMEOUT_SECONDS = 60
+
+# Maximum V8 heap size in MB (prevents memory exhaustion)
+MAX_HEAP_SIZE_MB = 256
+
+# Maximum output size in bytes (prevents parent process OOM from buffering)
+MAX_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# Maximum concurrent code executions (prevents resource exhaustion)
+MAX_CONCURRENT_EXECUTIONS = 3
+
+# Module-level semaphore for concurrency control
+_execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXECUTIONS)
 
 
 @dataclass
@@ -72,8 +98,22 @@ class CodeExecutor:
 
         Returns:
             ExecutionResult with execution details
+
+        DOS Protection:
+            - Timeout is capped at MAX_TIMEOUT_SECONDS (60s)
+            - Memory is limited via V8 --max-old-space-size flag
+            - Output is limited to MAX_OUTPUT_BYTES (10MB)
+            - Concurrent executions limited by semaphore
         """
         validation_result: ValidationResult | None = None
+
+        # Enforce timeout cap (DOS protection)
+        effective_timeout = min(self.timeout_seconds, MAX_TIMEOUT_SECONDS)
+        if self.timeout_seconds > MAX_TIMEOUT_SECONDS:
+            log.warning(
+                f"Requested timeout {self.timeout_seconds}s exceeds maximum, "
+                f"capping at {MAX_TIMEOUT_SECONDS}s"
+            )
 
         # Validate code first if enabled
         if self.validate_before_execution:
@@ -93,6 +133,18 @@ class CodeExecutor:
             if validation_result.warnings:
                 log.warning(f"Code validation warnings: {validation_result.warnings}")
 
+        # Limit concurrent executions (DOS protection)
+        async with _execution_semaphore:
+            return await self._execute_sandboxed(code, env, effective_timeout, validation_result)
+
+    async def _execute_sandboxed(
+        self,
+        code: str,
+        env: dict[str, str] | None,
+        effective_timeout: int,
+        validation_result: ValidationResult | None,
+    ) -> ExecutionResult:
+        """Internal method that runs the actual sandboxed execution."""
         # Create temporary directory for execution
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -115,6 +167,8 @@ class CodeExecutor:
             deno_cmd = [
                 deno_cmd_base,
                 "run",
+                # V8 memory limit (DOS protection)
+                f"--v8-flags=--max-old-space-size={MAX_HEAP_SIZE_MB}",
                 # Permissions (start with none, grant only what's needed)
                 "--no-prompt",  # Don't ask for permissions
                 net_permission,  # Allow network access only to specified hosts
@@ -140,23 +194,27 @@ class CodeExecutor:
                 )
 
                 try:
+                    # Use limited output reading to prevent OOM (DOS protection)
                     stdout, stderr = await asyncio.wait_for(
-                        process.communicate(), timeout=self.timeout_seconds
+                        self._read_output_limited(process),
+                        timeout=effective_timeout,
                     )
                 except TimeoutError:
-                    log.error(f"Code execution timed out after {self.timeout_seconds}s")
+                    log.error(f"Code execution timed out after {effective_timeout}s")
                     process.kill()
-                    await process.communicate()
+                    # Drain any remaining output to prevent zombie process
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(process.communicate(), timeout=5)
                     return ExecutionResult(
                         success=False,
                         output="",
-                        error=f"Execution timed out after {self.timeout_seconds}s",
+                        error=f"Execution timed out after {effective_timeout}s",
                         exit_code=-1,
                         validation=validation_result,
                     )
 
-                output = stdout.decode("utf-8")
-                error_output = stderr.decode("utf-8")
+                output = stdout.decode("utf-8", errors="replace")
+                error_output = stderr.decode("utf-8", errors="replace")
                 exit_code = process.returncode or 0
 
                 # Strip ANSI color codes from error output
@@ -208,6 +266,63 @@ class CodeExecutor:
             return str(home_deno)
 
         return "deno"  # Let it fail with a helpful error
+
+    async def _read_output_limited(self, process: Process) -> tuple[bytes, bytes]:
+        """
+        Read stdout and stderr with size limits to prevent OOM.
+
+        Reads up to MAX_OUTPUT_BYTES from each stream, then drains
+        and discards any remaining output to prevent deadlock.
+
+        Args:
+            process: The subprocess to read from
+
+        Returns:
+            Tuple of (stdout_bytes, stderr_bytes), truncated if needed
+        """
+
+        async def read_stream_limited(stream: asyncio.StreamReader | None, limit: int) -> bytes:
+            """Read up to limit bytes from a stream, then drain remainder."""
+            if stream is None:
+                return b""
+
+            data = b""
+            truncated = False
+
+            while len(data) < limit:
+                try:
+                    chunk = await stream.read(min(4096, limit - len(data)))
+                    if not chunk:
+                        break
+                    data += chunk
+                except Exception:
+                    break
+
+            # Drain any remaining output to prevent pipe deadlock
+            # but don't store it (DOS protection)
+            try:
+                while True:
+                    chunk = await stream.read(4096)
+                    if not chunk:
+                        break
+                    if not truncated:
+                        truncated = True
+                        log.warning(f"Output exceeded {limit} bytes, truncating (DOS protection)")
+            except Exception:
+                pass
+
+            return data
+
+        # Read both streams concurrently with limits
+        stdout_task = asyncio.create_task(read_stream_limited(process.stdout, MAX_OUTPUT_BYTES))
+        stderr_task = asyncio.create_task(read_stream_limited(process.stderr, MAX_OUTPUT_BYTES))
+
+        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+
+        # Wait for process to complete
+        await process.wait()
+
+        return stdout, stderr
 
     def _create_import_map(self) -> dict[str, Any]:  # noqa: C901
         """
