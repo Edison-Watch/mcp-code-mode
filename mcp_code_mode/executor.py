@@ -5,7 +5,7 @@ Deno provides:
 - Secure by default (no network, file system, or env access without explicit permission)
 - Native TypeScript support (no transpilation needed)
 - Configurable permissions model
-- Import maps to control module resolution
+- Import maps for module resolution
 
 DOS Protection:
 - Memory limit via V8 max-old-space-size flag
@@ -30,23 +30,12 @@ from .validator import CodeValidator, ValidationResult
 
 log = logging.getLogger(__name__)
 
-# =============================================================================
 # DOS Protection Constants
-# =============================================================================
-
-# Maximum timeout in seconds (hard cap, cannot be exceeded by caller)
-MAX_TIMEOUT_SECONDS = 60
-
-# Maximum V8 heap size in MB (prevents memory exhaustion)
+MAX_TIMEOUT_SECONDS = 90
 MAX_HEAP_SIZE_MB = 256
-
-# Maximum output size in bytes (prevents parent process OOM from buffering)
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MB
-
-# Maximum concurrent code executions (prevents resource exhaustion)
 MAX_CONCURRENT_EXECUTIONS = 3
 
-# Module-level semaphore for concurrency control
 _execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXECUTIONS)
 
 
@@ -72,54 +61,20 @@ class CodeExecutor:
         validate_before_execution: bool = True,
         allowed_net_hosts: list[str] | None = None,
     ):
-        """
-        Initialize the code executor.
-
-        Args:
-            mcp_libraries_path: Path to generated MCP client libraries (optional)
-            allowed_imports: List of allowed import prefixes for validation
-            timeout_seconds: Maximum execution time
-            validate_before_execution: Whether to validate code before executing
-            allowed_net_hosts: List of allowed network hosts (e.g., ["localhost:3000"])
-        """
         self.mcp_libraries_path = mcp_libraries_path
         self.timeout_seconds = timeout_seconds
         self.validate_before_execution = validate_before_execution
         self.allowed_net_hosts = allowed_net_hosts or ["localhost:3000"]
         self.validator = CodeValidator(allowed_imports=allowed_imports)
 
-    async def execute(self, code: str, env: dict[str, str] | None = None) -> ExecutionResult:  # noqa: C901
-        """
-        Execute TypeScript code in a sandboxed environment.
-
-        Args:
-            code: TypeScript code to execute
-            env: Environment variables to pass to the sandbox
-
-        Returns:
-            ExecutionResult with execution details
-
-        DOS Protection:
-            - Timeout is capped at MAX_TIMEOUT_SECONDS (60s)
-            - Memory is limited via V8 --max-old-space-size flag
-            - Output is limited to MAX_OUTPUT_BYTES (10MB)
-            - Concurrent executions limited by semaphore
-        """
+    async def execute(self, code: str, env: dict[str, str] | None = None) -> ExecutionResult:
+        """Execute TypeScript code in a sandboxed environment."""
         validation_result: ValidationResult | None = None
-
-        # Enforce timeout cap (DOS protection)
         effective_timeout = min(self.timeout_seconds, MAX_TIMEOUT_SECONDS)
-        if self.timeout_seconds > MAX_TIMEOUT_SECONDS:
-            log.warning(
-                f"Requested timeout {self.timeout_seconds}s exceeds maximum, "
-                f"capping at {MAX_TIMEOUT_SECONDS}s"
-            )
 
-        # Validate code first if enabled
         if self.validate_before_execution:
             log.info("Validating code before execution...")
             validation_result = await self.validator.validate(code)
-
             if not validation_result.valid:
                 log.error(f"Code validation failed: {validation_result.errors}")
                 return ExecutionResult(
@@ -130,10 +85,6 @@ class CodeExecutor:
                     validation=validation_result,
                 )
 
-            if validation_result.warnings:
-                log.warning(f"Code validation warnings: {validation_result.warnings}")
-
-        # Limit concurrent executions (DOS protection)
         async with _execution_semaphore:
             return await self._execute_sandboxed(code, env, effective_timeout, validation_result)
 
@@ -141,51 +92,40 @@ class CodeExecutor:
         self,
         code: str,
         env: dict[str, str] | None,
-        effective_timeout: int,
+        timeout: int,
         validation_result: ValidationResult | None,
     ) -> ExecutionResult:
-        """Internal method that runs the actual sandboxed execution."""
-        # Create temporary directory for execution
+        """Run code in Deno sandbox."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             code_file = temp_path / "code.ts"
             import_map_file = temp_path / "import_map.json"
 
-            # Write code to file
-            code_file.write_text(code, encoding="utf-8")
+            # Wrap code to ensure clean exit (MCP client leaves handles open)
+            wrapped_code = self._wrap_code_for_exit(code)
+            code_file.write_text(wrapped_code, encoding="utf-8")
 
-            # Create import map to redirect imports to MCP libraries
+            # Create import map
             import_map = self._create_import_map()
             import_map_file.write_text(json.dumps(import_map, indent=2), encoding="utf-8")
 
-            # Build Deno command with strict permissions
-            deno_cmd_base = self._find_deno()
-
-            # Build network permission flag
-            net_permission = f"--allow-net={','.join(self.allowed_net_hosts)}"
-
+            # Build Deno command
             deno_cmd = [
-                deno_cmd_base,
+                self._find_deno(),
                 "run",
-                # V8 memory limit (DOS protection)
                 f"--v8-flags=--max-old-space-size={MAX_HEAP_SIZE_MB}",
-                # Permissions (start with none, grant only what's needed)
-                "--no-prompt",  # Don't ask for permissions
-                net_permission,  # Allow network access only to specified hosts
+                "--no-prompt",
+                f"--allow-net={','.join(self.allowed_net_hosts)}",
                 "--import-map",
                 str(import_map_file),
             ]
 
-            # Add read permission for MCP libraries if path is set
             if self.mcp_libraries_path and self.mcp_libraries_path.exists():
-                deno_cmd.append(f"--allow-read={self.mcp_libraries_path}")
+                deno_cmd.append(f"--allow-read={self.mcp_libraries_path.resolve()}")
 
             deno_cmd.append(str(code_file))
 
-            log.debug(f"Executing Deno command: {' '.join(deno_cmd)}")
-
             try:
-                # Execute with timeout
                 process = await asyncio.create_subprocess_exec(
                     *deno_cmd,
                     stdout=PIPE,
@@ -194,21 +134,19 @@ class CodeExecutor:
                 )
 
                 try:
-                    # Use limited output reading to prevent OOM (DOS protection)
                     stdout, stderr = await asyncio.wait_for(
                         self._read_output_limited(process),
-                        timeout=effective_timeout,
+                        timeout=timeout,
                     )
                 except TimeoutError:
-                    log.error(f"Code execution timed out after {effective_timeout}s")
+                    log.error(f"Code execution timed out after {timeout}s")
                     process.kill()
-                    # Drain any remaining output to prevent zombie process
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(process.communicate(), timeout=5)
                     return ExecutionResult(
                         success=False,
                         output="",
-                        error=f"Execution timed out after {effective_timeout}s",
+                        error=f"Execution timed out after {timeout}s",
                         exit_code=-1,
                         validation=validation_result,
                     )
@@ -217,18 +155,14 @@ class CodeExecutor:
                 error_output = stderr.decode("utf-8", errors="replace")
                 exit_code = process.returncode or 0
 
-                # Strip ANSI color codes from error output
+                # Strip ANSI codes from error output
                 if error_output:
-                    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-                    error_output = ansi_escape.sub("", error_output)
-
-                success = exit_code == 0
-                if not success:
-                    log.error(f"Code execution failed with exit code {exit_code}")
-                    log.error(f"Error output: {error_output}")
+                    error_output = re.sub(
+                        r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", error_output
+                    )
 
                 return ExecutionResult(
-                    success=success,
+                    success=exit_code == 0,
                     output=output,
                     error=error_output if error_output else None,
                     exit_code=exit_code,
@@ -236,7 +170,6 @@ class CodeExecutor:
                 )
 
             except FileNotFoundError:
-                log.error("Deno not found. Please install Deno: https://deno.land/")
                 return ExecutionResult(
                     success=False,
                     output="",
@@ -258,172 +191,157 @@ class CodeExecutor:
         """Find the Deno executable."""
         if shutil.which("deno"):
             return "deno"
-
-        # Try standard installation location
         home_deno = Path.home() / ".deno" / "bin" / "deno"
         if home_deno.exists():
-            log.debug(f"Using Deno from: {home_deno}")
             return str(home_deno)
-
-        return "deno"  # Let it fail with a helpful error
+        return "deno"
 
     async def _read_output_limited(self, process: Process) -> tuple[bytes, bytes]:
-        """
-        Read stdout and stderr with size limits to prevent OOM.
+        """Read stdout/stderr with size limits to prevent OOM."""
 
-        Reads up to MAX_OUTPUT_BYTES from each stream, then drains
-        and discards any remaining output to prevent deadlock.
-
-        Args:
-            process: The subprocess to read from
-
-        Returns:
-            Tuple of (stdout_bytes, stderr_bytes), truncated if needed
-        """
-
-        async def read_stream_limited(stream: asyncio.StreamReader | None, limit: int) -> bytes:
-            """Read up to limit bytes from a stream, then drain remainder."""
+        async def read_limited(stream: asyncio.StreamReader | None) -> bytes:
             if stream is None:
                 return b""
-
             data = b""
-            truncated = False
-
-            while len(data) < limit:
-                try:
-                    chunk = await stream.read(min(4096, limit - len(data)))
-                    if not chunk:
-                        break
-                    data += chunk
-                except Exception:
+            while len(data) < MAX_OUTPUT_BYTES:
+                chunk = await stream.read(min(4096, MAX_OUTPUT_BYTES - len(data)))
+                if not chunk:
                     break
-
-            # Drain any remaining output to prevent pipe deadlock
-            # but don't store it (DOS protection)
-            try:
-                while True:
-                    chunk = await stream.read(4096)
-                    if not chunk:
-                        break
-                    if not truncated:
-                        truncated = True
-                        log.warning(f"Output exceeded {limit} bytes, truncating (DOS protection)")
-            except Exception:
-                pass
-
+                data += chunk
+            # Drain remainder to prevent deadlock
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
             return data
 
-        # Read both streams concurrently with limits
-        stdout_task = asyncio.create_task(read_stream_limited(process.stdout, MAX_OUTPUT_BYTES))
-        stderr_task = asyncio.create_task(read_stream_limited(process.stderr, MAX_OUTPUT_BYTES))
-
-        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
-
-        # Wait for process to complete
+        stdout, stderr = await asyncio.gather(
+            read_limited(process.stdout),
+            read_limited(process.stderr),
+        )
         await process.wait()
-
         return stdout, stderr
 
-    def _create_import_map(self) -> dict[str, Any]:  # noqa: C901
+    def _wrap_code_for_exit(self, code: str) -> str:
         """
-        Create an import map for Deno to resolve MCP library imports.
+        Ensure code exits cleanly.
 
-        Scans the actual generated code to find what it imports, then maps those.
+        The MCP TypeScript client doesn't fully clean up async handles,
+        so we add Deno.exit() to ensure termination.
         """
-        import_map: dict[str, Any] = {"imports": {}}
+        if "Deno.exit" in code:
+            return code
+
+        stripped = code.rstrip()
+
+        # If code ends with promise chain like .then(...).catch(...);
+        # add .finally(() => Deno.exit(0))
+        if (".then(" in code or ".catch(" in code) and stripped.endswith(");"):
+            return f"{stripped[:-1]}\n  .finally(() => Deno.exit(0));\n"
+
+        # If code ends with simple function call like main();
+        if re.search(r"\w+\(\)\s*;\s*$", stripped):
+            return (
+                re.sub(
+                    r"(\w+)\(\)\s*;\s*$",
+                    r"\1().then(() => Deno.exit(0)).catch((e) => { console.error(e); Deno.exit(1); });",
+                    stripped,
+                )
+                + "\n"
+            )
+
+        # For code with imports, add exit at end
+        if "import " in code:
+            return f"{code}\nDeno.exit(0);\n"
+
+        # Wrap in async IIFE
+        return f"(async () => {{\n{code}\n}})().then(() => Deno.exit(0)).catch((e) => {{ console.error(e); Deno.exit(1); }});\n"
+
+    def _create_import_map(self) -> dict[str, Any]:
+        """Create import map for Deno to resolve MCP libraries and npm packages."""
+        imports: dict[str, str] = {}
 
         if not self.mcp_libraries_path or not self.mcp_libraries_path.exists():
-            return import_map
-
-        import_pattern = re.compile(r"from\s+['\"]([^'\"]+)['\"]")
+            return {"imports": imports}
 
         # Scan for generated libraries
         for server_dir in self.mcp_libraries_path.iterdir():
-            if server_dir.is_dir():
-                # Map @mcp-codegen/{server} to the generated dist/index.js
-                package_name = f"@mcp-codegen/{server_dir.name}"
-                entry_point = server_dir / "dist" / "index.js"
+            if not server_dir.is_dir():
+                continue
 
-                if entry_point.exists():
-                    # Use absolute path or file:// URL
-                    import_map["imports"][package_name] = str(entry_point.resolve())
-                    log.debug(f"Mapped {package_name} -> {entry_point}")
+            entry_point = server_dir / "dist" / "index.js"
+            if not entry_point.exists():
+                continue
 
-                    # Scan actual imports from generated code
-                    node_modules = server_dir / "node_modules"
-                    dist_dir = server_dir / "dist"
-                    sdk_dir = (
-                        node_modules / "@modelcontextprotocol" / "sdk" / "dist" / "esm"
-                        if node_modules.exists()
-                        else None
-                    )
+            # Map @mcp-codegen/{server} to generated library
+            package_name = f"@mcp-codegen/{server_dir.name}"
+            imports[package_name] = f"file://{entry_point.resolve()}"
 
-                    # Collect all imports
-                    all_imports: set[str] = set()
+            # Find node_modules for this library
+            node_modules = server_dir / "node_modules"
+            if not node_modules.exists():
+                continue
 
-                    # Scan generated library
-                    if dist_dir.exists():
-                        for js_file in dist_dir.rglob("*.js"):
-                            try:
-                                content = js_file.read_text()
-                                for match in import_pattern.finditer(content):
-                                    imp = match.group(1)
-                                    if not imp.startswith("."):
-                                        all_imports.add(imp)
-                            except Exception:
-                                pass
+            # Map MCP SDK imports to local ESM files
+            sdk_esm = node_modules / "@modelcontextprotocol" / "sdk" / "dist" / "esm"
+            if sdk_esm.exists():
+                # Map base SDK
+                sdk_index = sdk_esm / "index.js"
+                if sdk_index.exists():
+                    imports["@modelcontextprotocol/sdk"] = f"file://{sdk_index.resolve()}"
 
-                    # Scan SDK files for transitive dependencies
-                    if sdk_dir and sdk_dir.exists():
-                        for js_file in sdk_dir.rglob("*.js"):
-                            try:
-                                content = js_file.read_text()
-                                for match in import_pattern.finditer(content):
-                                    imp = match.group(1)
-                                    if not imp.startswith(".") and not imp.startswith("node:"):
-                                        all_imports.add(imp)
-                            except Exception:
-                                pass
+                # Map all SDK sub-paths
+                for js_file in sdk_esm.rglob("*.js"):
+                    rel_path = js_file.relative_to(sdk_esm)
+                    import_path = str(rel_path).replace("\\", "/")
+                    file_url = f"file://{js_file.resolve()}"
 
-                    # Map the imports we found
-                    for imp in all_imports:
-                        if imp.startswith("@modelcontextprotocol/"):
-                            # Map MCP SDK imports to ESM paths
-                            parts = imp.split("/")
-                            if len(parts) >= 2:
-                                sdk_path = node_modules / parts[0] / parts[1]
-                                if sdk_path.exists():
-                                    rel_path = "/".join(parts[2:])
-                                    full_path = sdk_path / "dist" / "esm" / rel_path
-                                    if full_path.exists():
-                                        import_map["imports"][imp] = str(full_path.resolve())
-                                        log.debug(f"Mapped {imp} -> {full_path}")
-                        elif not imp.startswith("node:"):
-                            # Regular npm package - use npm: specifier
-                            if imp not in import_map["imports"]:
-                                import_map["imports"][imp] = f"npm:{imp}"
-                                log.debug(f"Mapped {imp} -> npm:{imp}")
-                else:
-                    log.warning(
-                        f"Generated library {server_dir.name} found but not built. "
-                        "Run 'npm run build' in the library directory."
-                    )
+                    # Map with .js extension
+                    imports[f"@modelcontextprotocol/sdk/{import_path}"] = file_url
 
-        return import_map
+                    # Also without .js for compatibility
+                    if import_path.endswith(".js"):
+                        imports[f"@modelcontextprotocol/sdk/{import_path[:-3]}"] = file_url
+
+            # Scan generated code for npm dependencies
+            dist_dir = server_dir / "dist"
+            npm_deps = self._find_npm_imports(dist_dir, sdk_esm)
+
+            # Map npm dependencies to npm: specifiers (Deno handles caching)
+            for dep in npm_deps:
+                if dep not in imports:
+                    imports[dep] = f"npm:{dep}"
+
+        return {"imports": imports}
+
+    def _find_npm_imports(self, *dirs: Path | None) -> set[str]:
+        """Scan directories for npm import statements."""
+        pattern = re.compile(r"from\s+['\"]([^'\"]+)['\"]")
+        deps: set[str] = set()
+
+        for dir_path in dirs:
+            if not dir_path or not dir_path.exists():
+                continue
+            for js_file in dir_path.rglob("*.js"):
+                try:
+                    for match in pattern.finditer(js_file.read_text()):
+                        imp = match.group(1)
+                        # Skip relative, node built-ins, and already-mapped imports
+                        if (
+                            not imp.startswith(".")
+                            and not imp.startswith("node:")
+                            and not imp.startswith("@modelcontextprotocol/")
+                        ):
+                            deps.add(imp)
+                except Exception:
+                    pass
+
+        return deps
 
     async def execute_file(
         self, file_path: Path, env: dict[str, str] | None = None
     ) -> ExecutionResult:
-        """
-        Execute a TypeScript file.
-
-        Args:
-            file_path: Path to the TypeScript file
-            env: Environment variables to pass to the sandbox
-
-        Returns:
-            ExecutionResult with execution details
-        """
+        """Execute a TypeScript file."""
         try:
             code = file_path.read_text(encoding="utf-8")
             return await self.execute(code, env)
@@ -443,35 +361,17 @@ async def main() -> None:
         timeout_seconds=10,
     )
 
-    # Test code that uses basic TypeScript
     test_code = """
-    // Example: Basic TypeScript execution
-    console.log("Starting code mode execution...");
-
-    const result = {
-        status: "ok",
-        message: "Code mode execution successful",
-    };
-
-    console.log(JSON.stringify(result, null, 2));
+    console.log("Code mode execution successful");
+    console.log(JSON.stringify({ status: "ok" }, null, 2));
     """
 
     print("Executing test code...")
     result = await executor.execute(test_code)
-
-    print(f"\n{'=' * 60}")
     print(f"Success: {result.success}")
-    print(f"Exit Code: {result.exit_code}")
-    print(f"{'=' * 60}")
-    print(f"\nOutput:\n{result.output}")
+    print(f"Output: {result.output}")
     if result.error:
-        print(f"\nError:\n{result.error}")
-    if result.validation:
-        print("\nValidation:")
-        print(f"  Valid: {result.validation.valid}")
-        print(f"  Errors: {result.validation.errors}")
-        print(f"  Warnings: {result.validation.warnings}")
-        print(f"  Imports: {result.validation.imports}")
+        print(f"Error: {result.error}")
 
 
 if __name__ == "__main__":
