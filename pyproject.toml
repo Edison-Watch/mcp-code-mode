@@ -4,9 +4,7 @@ version = "0.1.0"
 description = "Secure TypeScript code execution sandbox for MCP (Model Context Protocol)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-authors = [
-    { name = "Edison Watch Team", email = "team@edison.watch" }
-]
+authors = [{ name = "Edison Watch Team", email = "hello@edison.watch" }]
 keywords = [
     "mcp",
     "model-context-protocol",
@@ -27,19 +25,14 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
 ]
 requires-python = ">=3.12"
-dependencies = [
-    "fastmcp>=2.0.0",
-]
+dependencies = ["fastmcp>=2.0.0"]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "ruff>=0.8.0",
-]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.8.0"]
 
 [project.scripts]
 mcp-code-mode = "server:main"
+mcp-codegen = "mcp_codegen.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/edison-watch/mcp-code-mode"
@@ -51,17 +44,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mcp_code_mode"]
-include = [
-    "js/*.mjs",
-    "js/package.json",
-    "README.md",
-    "LICENSE",
-]
+packages = ["mcp_code_mode", "mcp_codegen"]
+include = ["js/*.mjs", "js/package.json", "README.md", "LICENSE"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "mcp_code_mode/**",
+    "mcp_codegen/**",
     "js/**",
     "tests/**",
     "server.py",
@@ -85,4 +74,3 @@ force-single-line = false
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
-
