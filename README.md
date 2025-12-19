@@ -1,4 +1,14 @@
-# MCP Code Mode
+# 🧩 MCP Code Mode
+
+<p align="center">
+  <a href="https://discord.gg/tXjATaKgTV"><img alt="Join our Discord" src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white"></a>
+  <img alt="Project Version" src="https://img.shields.io/pypi/v/mcp-code-mode?label=version&color=blue">
+  <img alt="Python Version" src="https://img.shields.io/badge/python-3.12-blue?logo=python">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
+
+</p>
+
+---
 
 **Generate TypeScript code from any MCP server, with AST-Analysed Code Control**
 
@@ -13,14 +23,14 @@ This repository also includes optional security primitives for “code mode” e
 2. **AST analysis (static safety layer):** Reject dynamic/obfuscated patterns before execution, enabling reliable reasoning about what code can do.
 3. **Deno sandbox (isolation):** A straightforward Deno-permissions sandbox to reduce RCE risk and restrict network/file access.
 
-## Installation
+## 📦 Installation
 
 ```bash
 pip install mcp-code-mode
 cd js && npm install
 ```
 
-## Usage: MCP → typed TypeScript client generation (the main USP)
+## 🚀 Usage: MCP → typed TypeScript client generation (the main USP)
 
 To let an LLM (or any runtime) write code against MCP tools, it helps a lot to have a real TypeScript library instead of raw JSON tool calls. This repo includes `mcp-codegen`, a Python CLI that connects to an MCP server, introspects tools/resources/prompts, and generates a *static* TypeScript client library.
 
@@ -30,7 +40,7 @@ mcp-codegen --url http://localhost:3000/mcp/YOUR_API_KEY --output ./generated
 ```
 
 <details>
-<summary><strong>Optional: execute generated TypeScript in “code mode” (sandbox + AST gate)</strong></summary>
+<summary><strong>🧰 Optional: execute generated TypeScript in “code mode” (sandbox + AST gate)</strong></summary>
 
 If you also want to *run* TypeScript produced by an agent, `mcp_code_mode.CodeExecutor` runs it in a Deno sandbox and can gate it with the AST analysis layer.
 
@@ -72,12 +82,12 @@ if __name__ == "__main__":
 
 </details>
 
-## Motivation (expand for details)
+## 💡 Motivation (expand for details)
 
 At a high level: **sandboxing reduces RCE risk, but it doesn’t automatically stop prompt-injection-driven data exfiltration** in MCP “code mode”. The rest of this section explains the “lethal trifecta” framing and why AST analysis helps reduce false positives.
 
 <details>
-<summary><strong>Why sandboxing isn’t enough (data exfiltration) + lethal trifecta + false positives</strong></summary>
+<summary><strong>⚠️ Why sandboxing isn’t enough (data exfiltration) + lethal trifecta + false positives</strong></summary>
 
 MCP “code mode” still suffers from **prompt-injection-driven data exfiltration**, even when the code is sandboxed. A sandbox can prevent the script from *harming the host* (RCE, arbitrary network/file access), but it doesn’t automatically prevent the script from **reading sensitive tool outputs and funneling them into an exfiltration channel** (often via other allowed tool calls or outputs).
 
@@ -87,7 +97,7 @@ Our previous work with OpenEdison introduced a deterministic mitigation: the **l
 
 **Lethal trifecta, in 1–2 lines:** label tools/data sources and track (per agent session) when the model has ingested untrusted content; then **block tool-call plans that would combine untrusted influence + sensitive data access + an exfiltration path**, preventing deterministic “read secret → leak secret” flows.
 
-#### Why naïve lethal-trifecta blocking has high false positives
+#### 🎯 Why naïve lethal-trifecta blocking has high false positives
 
 This repo adds an **AST-based static analysis layer that runs before execution**. It rejects code containing “funny business” or dynamic patterns (e.g., WebAssembly, prototype modification, or complex indirection) so the program remains statically analyzable.
 
@@ -95,13 +105,13 @@ If you “always block once untrusted content exists,” you end up with constan
 
 Naïve blocking treats *any* access to a potentially untrusted tool as contamination, which produces very high false positives and turns the algorithm into a sledgehammer rather than a scalpel.
 
-#### How AST analysis reduces false positives (“only contaminate what reaches the context window”)
+#### 🔍 How AST analysis reduces false positives (“only contaminate what reaches the context window”)
 
 That analyzability is useful on its own, but it’s also the key to reducing false positives in lethal-trifecta-style defenses: instead of registering everything as contaminated up-front, you can **only register contamination of untrusted content if it actually enters the LLM context window through code execution** (e.g., via `console.log`/return values that get fed back to the model). This can be made **granular down to specific tool attributes**, e.g. “event.title contaminated” while “event.start time safe,” depending on what the program actually surfaces to the model.
 
 </details>
 
-## The security model (expand for details)
+## 🛡️ The security model (expand for details)
 
 In this repo, “secure code mode” is split into:
 
@@ -109,11 +119,11 @@ In this repo, “secure code mode” is split into:
 - **Data flow**: reject dynamic/obfuscated code patterns up front so the program is statically analyzable.
 
 <details>
-<summary><strong>Security model details: Deno sandbox + AST analysis rules</strong></summary>
+<summary><strong>🔒 Security model details: Deno sandbox + AST analysis rules</strong></summary>
 
 Securing Code Mode requires addressing two distinct vectors: **System Integrity** and **Data Flow**.
 
-### 1) System integrity: Deno sandbox (RCE + network isolation)
+### 🧱 1) System integrity: Deno sandbox (RCE + network isolation)
 
 We utilize Deno’s permission system to prevent executed code from harming the host machine.
 
@@ -121,13 +131,13 @@ We utilize Deno’s permission system to prevent executed code from harming the 
 - **Filesystem**: scoped read-only access to specific library directories.
 - **Environment**: no access to environment variables.
 
-### 2) Data flow: AST analysis (reject dynamic “funny business”)
+### 🌊 2) Data flow: AST analysis (reject dynamic “funny business”)
 
 Sandboxing reduces RCE risk, but it doesn’t automatically prevent data exfiltration. To make data-flow controls viable (and reduce false positives), the executed TypeScript must be **statically analyzable**.
 
 By parsing the AST (Abstract Syntax Tree) before execution, we enforce a “strict TypeScript” subset and reject patterns that introduce dynamic behavior, hidden dependencies, or hard-to-audit indirection.
 
-#### High-level examples of allowed vs rejected patterns
+#### 📊 High-level examples of allowed vs rejected patterns
 
 | Category | Allowed (analyzable) | Rejected (dynamic/obfuscated) | Why it’s rejected |
 | :--- | :--- | :--- | :--- |
@@ -143,10 +153,10 @@ By parsing the AST (Abstract Syntax Tree) before execution, we enforce a “stri
 
 <img width="685" height="685" alt="Screenshot 2025-12-19 at 18 56 09" src="https://github.com/user-attachments/assets/90158f80-13e0-4b3b-b8f7-9a48480fed6f" />
 
-## Commercial Integration & Advanced Security
+## 🤝 Commercial Integration & Advanced Security
 
 <details>
-<summary><strong>Commercial integration (Edison Watch)</strong></summary>
+<summary><strong>🏢 Commercial integration (Edison Watch)</strong></summary>
 
 This repository contains the foundational execution and validation layers used in our commercial product, **Edison Watch**.
 
@@ -159,12 +169,12 @@ While this OSS library enforces *analyzability*, Edison Watch leverages that ana
 
 </details>
 
-## Requirements
+## ✅ Requirements
 
   * Python 3.12+
   * Deno
   * Node.js (Required strictly for the AST parsing layer)
 
-## License
+## 📄 License
 
 Apache 2.0
