@@ -80,6 +80,8 @@ MCP “code mode” still suffers from **prompt-injection-driven data exfiltrati
 
 Our previous work with OpenEdison introduced a deterministic mitigation: the **lethal trifecta blocking algorithm** (details: `https://edisonwatch.substack.com/p/introducing-openedison`).
 
+**Important:** the lethal trifecta blocking / taint-permission enforcement logic is **not implemented in this repository**. This repo focuses on the **MCP→TypeScript code generator** plus the **sandbox + AST analyzability gate** that make stronger data-flow enforcement *possible elsewhere*.
+
 **Lethal trifecta, in 1–2 lines:** label tools/data sources and track (per agent session) when the model has ingested untrusted content; then **block tool-call plans that would combine untrusted influence + sensitive data access + an exfiltration path**, preventing deterministic “read secret → leak secret” flows.
 
 #### Why naïve lethal-trifecta blocking has high false positives
@@ -143,7 +145,7 @@ By parsing the AST (Abstract Syntax Tree) before execution, we enforce a “stri
 
 This repository contains the foundational execution and validation layers used in our commercial product, **Edison Watch**.
 
-While this OSS library enforces *analyzability*, Edison Watch leverages that analyzability to enforce **granular data permissions** (the “Trifecta” family of defenses).
+While this OSS library enforces *analyzability*, Edison Watch leverages that analyzability to enforce **granular data permissions** (the “Trifecta” family of defenses). That enforcement layer is **out of scope for this repo**.
 
 - **Open source**: helps ensure code is safer to run (reduced RCE risk) and readable (no obfuscation / dynamic tricks).
 - **Edison Watch**: enforces data permissions and tracks taint across the execution lifecycle.
