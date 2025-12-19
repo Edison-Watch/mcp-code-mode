@@ -169,12 +169,11 @@ While this OSS library enforces *analyzability*, Edison Watch leverages that ana
 
 </details>
 
-## ✅ Requirements
+<details>
+<summary><strong>✅ Requirements</strong></summary>
 
   * Python 3.12+
   * Deno
   * Node.js (Required strictly for the AST parsing layer)
 
-## 📄 License
-
-Apache 2.0
+</details>
