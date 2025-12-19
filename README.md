@@ -1,8 +1,9 @@
 # MCP Code Mode
 
 **Generate a static, typed TypeScript client from any MCP server** (and optionally execute “code mode” safely).
+<img width="685" height="685" alt="Screenshot 2025-12-19 at 18 56 09" src="https://github.com/user-attachments/assets/90158f80-13e0-4b3b-b8f7-9a48480fed6f" />
 
-The headline feature of this repo is **MCP → static TypeScript code generation**: a Python library that connects to a Model Context Protocol (MCP) server, reads its tool schema at runtime, and generates a *static* TypeScript library (SDK) you can import with full types/autocomplete. This lets agents write normal TypeScript against tools instead of juggling ad-hoc JSON calls.
+**Automatic MCP → static TypeScript code generation**: a Python library that connects to a Model Context Protocol (MCP) server, reads its tool schema at runtime, and generates a *static* TypeScript library (SDK) you can import with full types/autocomplete. This lets agents write normal TypeScript against tools instead of juggling ad-hoc JSON calls.
 
 This repository also includes optional security primitives for “code mode” execution:
 
