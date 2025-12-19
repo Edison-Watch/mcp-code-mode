@@ -26,7 +26,8 @@ To let an LLM (or any runtime) write code against MCP tools, it helps a lot to h
 mcp-codegen --url http://localhost:3000/mcp/YOUR_API_KEY --output ./generated
 ```
 
-## Optional: execute generated TypeScript in “code mode” with isolation + static checks
+<details>
+<summary><strong>Optional: execute generated TypeScript in “code mode” (sandbox + AST gate)</strong></summary>
 
 If you also want to *run* TypeScript produced by an agent, `mcp_code_mode.CodeExecutor` runs it in a Deno sandbox and can gate it with the AST analysis layer.
 
@@ -66,7 +67,14 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Motivation: sandboxing alone doesn’t solve data exfiltration in MCP “code mode”
+</details>
+
+## Motivation (expand for details)
+
+At a high level: **sandboxing reduces RCE risk, but it doesn’t automatically stop prompt-injection-driven data exfiltration** in MCP “code mode”. The rest of this section explains the “lethal trifecta” framing and why AST analysis helps reduce false positives.
+
+<details>
+<summary><strong>Why sandboxing isn’t enough (data exfiltration) + lethal trifecta + false positives</strong></summary>
 
 MCP “code mode” still suffers from **prompt-injection-driven data exfiltration**, even when the code is sandboxed. A sandbox can prevent the script from *harming the host* (RCE, arbitrary network/file access), but it doesn’t automatically prevent the script from **reading sensitive tool outputs and funneling them into an exfiltration channel** (often via other allowed tool calls or outputs).
 
@@ -74,19 +82,29 @@ Our previous work with OpenEdison introduced a deterministic mitigation: the **l
 
 **Lethal trifecta, in 1–2 lines:** label tools/data sources and track (per agent session) when the model has ingested untrusted content; then **block tool-call plans that would combine untrusted influence + sensitive data access + an exfiltration path**, preventing deterministic “read secret → leak secret” flows.
 
-### Why naïve lethal-trifecta blocking has high false positives
+#### Why naïve lethal-trifecta blocking has high false positives
+
+This repo adds an **AST-based static analysis layer that runs before execution**. It rejects code containing “funny business” or dynamic patterns (e.g., WebAssembly, prototype modification, or complex indirection) so the program remains statically analyzable.
 
 If you “always block once untrusted content exists,” you end up with constant blocking and a poor security–UX tradeoff. Example: take the classic *calendar prompt injection* scenario, but suppose the agent only ever prints **event metadata** (time, who sent it) rather than event bodies/notes. In that case it’s far less likely for the LLM to get jailbroken, because what matters is **what actually enters the LLM context window**.
 
 Naïve blocking treats *any* access to a potentially untrusted tool as contamination, which produces very high false positives and turns the algorithm into a sledgehammer rather than a scalpel.
 
-### How this repo reduces false positives: AST analysis + “only contaminate what reaches the context window”
-
-This repo adds an **AST-based static analysis layer that runs before execution**. It rejects code containing “funny business” or dynamic patterns (e.g., WebAssembly, prototype modification, or complex indirection) so the program remains statically analyzable.
+#### How AST analysis reduces false positives (“only contaminate what reaches the context window”)
 
 That analyzability is useful on its own, but it’s also the key to reducing false positives in lethal-trifecta-style defenses: instead of registering everything as contaminated up-front, you can **only register contamination of untrusted content if it actually enters the LLM context window through code execution** (e.g., via `console.log`/return values that get fed back to the model). This can be made **granular down to specific tool attributes**, e.g. “event.title contaminated” while “event.start time safe,” depending on what the program actually surfaces to the model.
 
-## The security model (what’s in this repo)
+</details>
+
+## The security model (expand for details)
+
+In this repo, “secure code mode” is split into:
+
+- **System integrity**: isolate execution (reduce RCE risk; restrict network/files/env).
+- **Data flow**: reject dynamic/obfuscated code patterns up front so the program is statically analyzable.
+
+<details>
+<summary><strong>Security model details: Deno sandbox + AST analysis rules</strong></summary>
 
 Securing Code Mode requires addressing two distinct vectors: **System Integrity** and **Data Flow**.
 
@@ -116,16 +134,23 @@ By parsing the AST (Abstract Syntax Tree) before execution, we enforce a “stri
 | **Prototype / globals** | local pure code | `Object.prototype... = ...` | Prototype modification enables surprising flows. |
 | **WASM** | N/A | `WebAssembly.*` | Adds opaque execution paths and payloads. |
 
+</details>
+
 ## Commercial Integration & Advanced Security
+
+<details>
+<summary><strong>Commercial integration (Edison Watch)</strong></summary>
 
 This repository contains the foundational execution and validation layers used in our commercial product, **Edison Watch**.
 
 While this OSS library enforces *analyzability*, Edison Watch leverages that analyzability to enforce **granular data permissions** (the “Trifecta” family of defenses).
 
-  * **Open Source:** Ensures code is safe to run (No RCE) and readable (No Obfuscation).
-  * **Edison Watch:** Ensures code only accesses data it is explicitly permitted to see, tracking data taint across the execution lifecycle.
+- **Open source**: helps ensure code is safer to run (reduced RCE risk) and readable (no obfuscation / dynamic tricks).
+- **Edison Watch**: enforces data permissions and tracks taint across the execution lifecycle.
 
 *If there is sufficient community demand, we may explore open-sourcing the Taint Tracking/Trifecta logic in the future.*
+
+</details>
 
 ## Requirements
 
