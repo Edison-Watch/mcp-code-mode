@@ -2,7 +2,6 @@
 
 <p align="center">
   <a href="https://discord.gg/tXjATaKgTV"><img alt="Join our Discord" src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white"></a>
-  <img alt="Project Version" src="https://img.shields.io/pypi/v/mcp-code-mode?label=version&color=blue">
   <img alt="Python Version" src="https://img.shields.io/badge/python-3.12-blue?logo=python">
   <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
 
