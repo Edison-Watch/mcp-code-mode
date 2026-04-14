@@ -186,7 +186,7 @@ async def compare_with_actual_responses(
                 except json.JSONDecodeError:
                     response_structure["sample_content"] = text[:200]
             elif hasattr(first_item, "data"):
-                response_structure["sample_content"] = getattr(first_item, "data")
+                response_structure["sample_content"] = first_item.data
 
         return {
             "tool": tool_name,

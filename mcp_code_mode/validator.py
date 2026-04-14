@@ -16,9 +16,9 @@ import json
 import logging
 import tempfile
 from asyncio.subprocess import PIPE
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any, cast
 
 log = logging.getLogger(__name__)
