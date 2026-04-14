@@ -165,7 +165,7 @@ async def compare_with_actual_responses(
         result = await client.call_tool(tool_name, args)
 
         # Analyze response structure
-        response_structure = {
+        response_structure: dict[str, object] = {
             "has_content": hasattr(result, "content"),
             "content_count": len(result.content) if hasattr(result, "content") else 0,
             "content_types": [],
@@ -179,13 +179,14 @@ async def compare_with_actual_responses(
 
             # Get sample content
             first_item = result.content[0]
-            if hasattr(first_item, "text"):
+            text = getattr(first_item, "text", None)
+            if isinstance(text, str):
                 try:
-                    response_structure["sample_content"] = json.loads(first_item.text)
+                    response_structure["sample_content"] = json.loads(text)
                 except json.JSONDecodeError:
-                    response_structure["sample_content"] = first_item.text[:200]
+                    response_structure["sample_content"] = text[:200]
             elif hasattr(first_item, "data"):
-                response_structure["sample_content"] = first_item.data
+                response_structure["sample_content"] = getattr(first_item, "data")
 
         return {
             "tool": tool_name,
@@ -236,4 +237,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
