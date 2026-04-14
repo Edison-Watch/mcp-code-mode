@@ -92,6 +92,7 @@ async def verify_information_transmission(  # noqa: C901
         types_content = types_file.read_text()
         # Look for parameter descriptions
         for tool in tools_with_params[:3]:  # Check first 3
+            assert tool.input_schema is not None
             props = tool.input_schema.get("properties", {})
             for prop_name, prop_schema in props.items():
                 prop_desc = prop_schema.get("description")

@@ -262,6 +262,7 @@ async def batch_generate(  # noqa: C901
 
         # Run npm install/build if requested
         if success and (install or build):
+            assert result is not None
             library_dir = output_dir / result
             if library_dir.exists():
                 if install or build:
