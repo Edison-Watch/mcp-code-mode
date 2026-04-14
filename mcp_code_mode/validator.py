@@ -18,7 +18,8 @@ import tempfile
 from asyncio.subprocess import PIPE
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
@@ -390,7 +391,8 @@ class CodeValidator:
 
         # Collect findings for each check
         for check_name, check_def in check_definitions.items():
-            found_items = check_def["check_fn"](import_analysis)
+            check_fn = cast(Callable[[list[ImportInfo]], list[ImportInfo]], check_def["check_fn"])
+            found_items = check_fn(import_analysis)
             findings[check_name] = {
                 "check_name": check_name,
                 "searched_for": check_def["searched_for"],
